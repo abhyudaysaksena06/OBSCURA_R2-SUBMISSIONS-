@@ -43,7 +43,8 @@ async function loadData() {
     supabase.from('settings').select('submissions_open, notice').maybeSingle(),
     supabase.from('reports')
       .select('*, teams(username, team_name), report_reviews(verdict, points, note, reviewed_at)')
-      .order('created_at', { ascending: true })
+      .eq('status', 'submitted')
+      .order('submitted_at', { ascending: true })
       .limit(5000),
   ]);
   for (const r of [teams, settings, reports]) if (r.error) throw r.error;
@@ -64,7 +65,7 @@ function summaryRows() {
     const v = r.review?.verdict;
     if (v) s[v]++; else s.pending++;
     s.points += r.review?.points || 0;
-    if (!s.last || r.created_at > s.last) s.last = r.created_at;
+    if (!s.last || r.submitted_at > s.last) s.last = r.submitted_at;
   }
   return [...by.values()].sort((a, b) => b.points - a.points || b.valid - a.valid || a.team.username.localeCompare(b.team.username));
 }
@@ -86,7 +87,6 @@ function filtered() {
 
 function reportHtml(r) {
   const v = r.review?.verdict || 'pending';
-  const editedAfterReview = r.review && new Date(r.updated_at) > new Date(r.review.reviewed_at);
   const block = (label, val, mono) => val ? `<div class="kv"><div class="k">${label}</div><div class="v ${mono ? 'mono pre' : 'pre'}">${esc(val)}</div></div>` : '';
   return `
     <article class="report" data-id="${r.id}">
@@ -95,9 +95,8 @@ function reportHtml(r) {
           <h3><span class="tag">#${r.id}</span> ${esc(r.title)}</h3>
           <span class="pill ${v}">${v}</span>
         </div>
-        <div class="meta"><b>${esc(r.teams?.team_name)}</b> (${esc(r.teams?.username)}) · submitted ${fmtTime(r.created_at)}
-          ${new Date(r.updated_at) - new Date(r.created_at) > 2000 ? ` · edited ${fmtTime(r.updated_at)}` : ''}
-          ${editedAfterReview ? ' · <span class="warn">edited after review</span>' : ''}</div>
+        <div class="meta"><b>${esc(r.teams?.team_name)}</b> (${esc(r.teams?.username)}) · submitted <b>${fmtTime(r.submitted_at)}</b>
+          <span class="dim">(${esc(r.submitted_at)})</span></div>
       </header>
       ${block('Observed', r.observed)}
       ${block('Where', r.location)}
@@ -215,11 +214,11 @@ async function saveReview(e) {
 }
 
 function exportCsv() {
-  const cols = ['id', 'team', 'username', 'created_at', 'updated_at', 'title', 'observed', 'location', 'steps', 'fix', 'code_ref', 'diff', 'verdict', 'points', 'note', 'reviewed_at'];
+  const cols = ['id', 'team', 'username', 'submitted_at', 'created_at', 'title', 'observed', 'location', 'steps', 'fix', 'code_ref', 'diff', 'verdict', 'points', 'note', 'reviewed_at'];
   const cell = (v) => `"${String(v ?? '').replaceAll('"', '""')}"`;
   const lines = [cols.join(',')];
   for (const r of state.reports) {
-    lines.push([r.id, r.teams?.team_name, r.teams?.username, r.created_at, r.updated_at, r.title, r.observed, r.location, r.steps, r.fix, r.code_ref, r.diff,
+    lines.push([r.id, r.teams?.team_name, r.teams?.username, r.submitted_at, r.created_at, r.title, r.observed, r.location, r.steps, r.fix, r.code_ref, r.diff,
       r.review?.verdict || 'pending', r.review?.points, r.review?.note, r.review?.reviewed_at].map(cell).join(','));
   }
   const blob = new Blob([lines.join('\n')], { type: 'text/csv' });

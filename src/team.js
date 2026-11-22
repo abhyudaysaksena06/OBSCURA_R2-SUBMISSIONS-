@@ -91,13 +91,16 @@ function fieldHtml(f, values) {
 
 function reportHtml(r) {
   const open = state.settings.submissions_open;
-  const edited = r.updated_at && new Date(r.updated_at) - new Date(r.created_at) > 2000;
+  const draft = r.status !== 'submitted';
   const block = (label, val, mono) => val ? `<div class="kv"><div class="k">${label}</div><div class="v ${mono ? 'mono pre' : 'pre'}">${esc(val)}</div></div>` : '';
   return `
-    <article class="report" data-id="${r.id}">
+    <article class="report ${draft ? 'is-draft' : 'is-submitted'}" data-id="${r.id}">
       <header>
-        <h3>${esc(r.title)}</h3>
-        <div class="meta">Submitted ${fmtTime(r.created_at)}${edited ? ` · edited ${fmtTime(r.updated_at)}` : ''}</div>
+        <div class="row between">
+          <h3>${esc(r.title)}</h3>
+          <span class="pill ${draft ? 'pending' : 'valid'}">${draft ? 'draft' : 'submitted'}</span>
+        </div>
+        <div class="meta">${draft ? `Draft saved ${fmtTime(r.updated_at)}` : `Submitted ${fmtTime(r.submitted_at)}`}</div>
       </header>
       <details>
         <summary>Show details</summary>
@@ -108,9 +111,10 @@ function reportHtml(r) {
         ${block('Files and lines', r.code_ref, true)}
         ${block('Code change', r.diff, true)}
       </details>
-      ${open ? `<div class="actions">
-        <button class="ghost" data-act="edit">Edit</button>
-        <button class="ghost danger" data-act="delete">Delete</button>
+      ${open && draft ? `<div class="actions">
+        <button class="primary small" data-act="submit">Submit this bug</button>
+        <button class="ghost small" data-act="edit">Edit</button>
+        <button class="ghost small danger" data-act="delete">Remove</button>
       </div>` : ''}
     </article>`;
 }
@@ -129,6 +133,8 @@ function renderDashboard() {
   const editing = editingId ? reports.find((r) => r.id === editingId) : null;
   const values = editing || loadDraft() || {};
   const open = settings.submissions_open;
+  const drafts = reports.filter((r) => r.status !== 'submitted');
+  const submitted = reports.filter((r) => r.status === 'submitted').sort((a, b) => b.submitted_at.localeCompare(a.submitted_at));
 
   app.innerHTML = `
     ${settings.notice ? `<div class="banner">${esc(settings.notice)}</div>` : ''}
@@ -136,19 +142,25 @@ function renderDashboard() {
     <div class="grid">
       <section class="card">
         ${open ? `
-          <h2>${editing ? 'Edit report' : 'Report a bug'}</h2>
-          <p class="muted">Submit one report for each bug you found and fixed. Fields with <span class="req">*</span> are required.</p>
+          <h2>${editing ? 'Edit draft' : 'Add a bug'}</h2>
+          <p class="muted">Add one bug at a time. Save it as a draft, or submit it straight away. Fields with <span class="req">*</span> are required.</p>
           <form id="report">${FIELDS.map((f) => fieldHtml(f, values)).join('')}
             <div class="row">
-              <button class="primary" type="submit">${editing ? 'Save changes' : 'Submit report'}</button>
+              <button class="primary" type="submit" name="intent" value="submit">${editing ? 'Save and submit' : 'Submit this bug'}</button>
+              <button class="ghost" type="submit" name="intent" value="draft">${editing ? 'Save draft' : 'Save as draft'}</button>
               ${editing ? '<button type="button" id="cancel" class="ghost">Cancel</button>' : '<button type="button" id="clear" class="ghost">Clear form</button>'}
             </div>
-          </form>` : `<h2>Report a bug</h2><p class="muted">The form is closed.</p>`}
+          </form>` : `<h2>Add a bug</h2><p class="muted">The form is closed.</p>`}
       </section>
       <section class="card">
-        <h2>Your reports</h2>
-        <p class="muted">Only your team can see these.</p>
-        <div id="list">${reports.length ? reports.map(reportHtml).join('') : '<p class="empty">Nothing submitted yet.</p>'}</div>
+        <h2>Your bugs</h2>
+        <p class="muted">Only your team can see these. Drafts can be edited or removed. Submitting a bug is final and records the time.</p>
+        <div id="list">
+          <h3 class="sub">Drafts</h3>
+          ${drafts.length ? drafts.map(reportHtml).join('') : '<p class="empty">No drafts.</p>'}
+          <h3 class="sub">Submitted</h3>
+          ${submitted.length ? submitted.map(reportHtml).join('') : '<p class="empty">Nothing submitted yet.</p>'}
+        </div>
       </section>
     </div>`;
 
@@ -165,31 +177,34 @@ function renderDashboard() {
 async function onSubmit(e) {
   e.preventDefault();
   const form = e.target;
-  const btn = form.querySelector('button[type=submit]');
+  const intent = e.submitter?.value === 'draft' ? 'draft' : 'submit';
+  const buttons = form.querySelectorAll('button[type=submit]');
+  const fd = new FormData(form);
   const payload = {};
-  for (const f of FIELDS) {
-    const v = String(new FormData(form).get(f.name) || '').trim();
-    payload[f.name] = v || null;
-  }
+  for (const f of FIELDS) payload[f.name] = String(fd.get(f.name) || '').trim() || null;
   for (const f of FIELDS) {
     if (f.required && (!payload[f.name] || payload[f.name].length < (f.min || 1))) {
       return toast(`"${f.label}" needs at least ${f.min} characters.`, 'err');
     }
   }
-  btn.disabled = true;
-  btn.textContent = 'Saving…';
+  buttons.forEach((b) => (b.disabled = true));
   const q = state.editingId
     ? supabase.from('reports').update(payload).eq('id', state.editingId).select().single()
     : supabase.from('reports').insert(payload).select().single();
-  const { error } = await q;
+  const { data, error } = await q;
   if (error) {
-    btn.disabled = false;
-    btn.textContent = state.editingId ? 'Save changes' : 'Submit report';
+    buttons.forEach((b) => (b.disabled = false));
     return toast(friendlyError(error), 'err');
   }
-  toast(state.editingId ? 'Report updated.' : 'Report submitted.');
   if (!state.editingId) clearDraft();
   state.editingId = null;
+  if (intent === 'submit') {
+    const { error: subErr } = await supabase.rpc('submit_report', { p_id: data.id });
+    if (subErr) toast(`Saved as a draft, but not submitted: ${friendlyError(subErr)}`, 'err');
+    else toast('Bug submitted.');
+  } else {
+    toast('Draft saved.');
+  }
   await refresh();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -202,16 +217,21 @@ async function onListClick(e) {
     state.editingId = id;
     renderDashboard();
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  } else if (btn.dataset.act === 'delete') {
+  } else if (btn.dataset.act === 'delete' || btn.dataset.act === 'submit') {
+    const isSubmit = btn.dataset.act === 'submit';
     if (btn.dataset.confirm !== '1') {
+      const label = btn.textContent;
       btn.dataset.confirm = '1';
-      btn.textContent = 'Click again to delete';
-      setTimeout(() => { btn.dataset.confirm = ''; btn.textContent = 'Delete'; }, 4000);
+      btn.textContent = isSubmit ? 'Click again: submitting is final' : 'Click again to remove';
+      setTimeout(() => { btn.dataset.confirm = ''; btn.textContent = label; }, 4000);
       return;
     }
-    const { error } = await supabase.from('reports').delete().eq('id', id);
-    if (error) return toast(friendlyError(error), 'err');
-    toast('Report deleted.');
+    btn.disabled = true;
+    const { error } = isSubmit
+      ? await supabase.rpc('submit_report', { p_id: id })
+      : await supabase.from('reports').delete().eq('id', id);
+    if (error) { btn.disabled = false; return toast(friendlyError(error), 'err'); }
+    toast(isSubmit ? 'Bug submitted.' : 'Draft removed.');
     if (state.editingId === id) state.editingId = null;
     await refresh();
   }

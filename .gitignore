@@ -6,3 +6,4 @@ dist/
 teams.csv
 *.local.csv
 .vercel
+!.env.production
